@@ -1,0 +1,28 @@
+﻿# Flutter/Dart
+.dart_tool/
+.packages
+.pub/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Android/Gradle
+**/.gradle/
+android/local.properties
+
+# iOS/macOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/ephemeral/
+**/DerivedData/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+.vscode/templates
