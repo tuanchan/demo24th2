@@ -6,6 +6,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'app.dart';
 import 'logic.dart';
+import 'save_flash_logic.dart'; // ✅ THÊM
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,5 +20,9 @@ Future<void> main() async {
   final logic = AppLogic();
   await logic.init();
 
-  runApp(AppRoot(logic: logic));
+  // ✅ THÊM: khởi tạo SaveFlash
+  final saveFlashLogic = SaveFlashLogic();
+  await saveFlashLogic.init();
+
+  runApp(AppRoot(logic: logic, saveFlashLogic: saveFlashLogic));
 }

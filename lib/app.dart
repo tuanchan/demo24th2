@@ -1,6 +1,6 @@
 // app.dart
-// app.dart - CẬP NHẬT: THEME CONFIG A→Z (đổi mọi màu/font), GIỮ NGUYÊN UI/LAYOUT,
-// VISUALIZER TO HƠN + STICKY HEROCARD + LOADING UI CHO BACKUP/RESTORE
+// CẬP NHẬT: tích hợp SaveFlash (scan + popup khi mở app / resume)
+// GIỮ NGUYÊN toàn bộ UI/layout/logic cũ.
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'package:archive/archive.dart';
 import 'dart:io';
@@ -12,148 +12,174 @@ import 'package:flutter_slidable/flutter_slidable.dart';
 import 'dart:async';
 
 import 'logic.dart';
+import 'save_flash_logic.dart';   // ✅ THÊM
+import 'save_flash_popup.dart';   // ✅ THÊM
 
 class AppRoot extends StatefulWidget {
   final AppLogic logic;
-  const AppRoot({super.key, required this.logic});
+  final SaveFlashLogic saveFlashLogic; // ✅ THÊM
+  const AppRoot({super.key, required this.logic, required this.saveFlashLogic});
 
   @override
   State<AppRoot> createState() => _AppRootState();
 }
 
-class _AppRootState extends State<AppRoot> {
+class _AppRootState extends State<AppRoot> with WidgetsBindingObserver { // ✅ thêm WidgetsBindingObserver
   int _tab = 0;
-StreamSubscription<List<SharedMediaFile>>? _shareSub;
-bool _handledInitialShare = false;
-Future<void> _handleIncomingShared(List<SharedMediaFile> files) async {
-  if (files.isEmpty) return;
+  StreamSubscription<List<SharedMediaFile>>? _shareSub;
+  bool _handledInitialShare = false;
 
-  // chỉ lấy file path
-  final paths = <String>[];
-  for (final f in files) {
-    final pth = f.path;
-    if (pth.trim().isNotEmpty) paths.add(pth);
-  }
-  if (paths.isEmpty) return;
+  Future<void> _handleIncomingShared(List<SharedMediaFile> files) async {
+    if (files.isEmpty) return;
 
-  // Import vào library trước
-  final res = await widget.logic.importSharedFiles(paths);
-  if (!mounted) return;
+    final paths = <String>[];
+    for (final f in files) {
+      final pth = f.path;
+      if (pth.trim().isNotEmpty) paths.add(pth);
+    }
+    if (paths.isEmpty) return;
 
-  if (res.importedTrackIds.isEmpty) {
+    final res = await widget.logic.importSharedFiles(paths);
+    if (!mounted) return;
+
+    if (res.importedTrackIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Không có file mới để thêm')),
+      );
+      return;
+    }
+
+    if (widget.logic.playlists.where((p) => !p.isSpecial).isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Đã thêm ${res.importedTrackIds.length} file vào thư viện')),
+      );
+      return;
+    }
+
+    final chosen = await _pickPlaylistId(context);
+    if (!mounted) return;
+
+    if (chosen == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Đã thêm ${res.importedTrackIds.length} file vào thư viện')),
+      );
+      return;
+    }
+
+    await widget.logic.addManyToPlaylist(chosen, res.importedTrackIds);
+    if (!mounted) return;
+
+    final plName = widget.logic.playlists.firstWhere((p) => p.id == chosen).name;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Không có file mới để thêm')),
+      SnackBar(content: Text('Đã lưu ${res.importedTrackIds.length} file vào "$plName"')),
     );
-    return;
   }
 
-  // Nếu chưa có playlist nào -> lưu library là xong (theo yêu cầu anh)
-  if (widget.logic.playlists.where((p) => !p.isSpecial).isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Đã thêm ${res.importedTrackIds.length} file vào thư viện')),
-    );
-    return;
-  }
-
-  // Có playlist -> hỏi muốn lưu vào playlist nào
-  final chosen = await _pickPlaylistId(context);
-  if (!mounted) return;
-
-  if (chosen == null) {
-    // user bấm huỷ => giữ trong library
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Đã thêm ${res.importedTrackIds.length} file vào thư viện')),
-    );
-    return;
-  }
-
-  await widget.logic.addManyToPlaylist(chosen, res.importedTrackIds);
-  if (!mounted) return;
-
-  final plName = widget.logic.playlists.firstWhere((p) => p.id == chosen).name;
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text('Đã lưu ${res.importedTrackIds.length} file vào "$plName"')),
-  );
-}
-Future<String?> _pickPlaylistId(BuildContext context) async {
-  final pls = widget.logic.playlists.where((p) => !p.isSpecial).toList();
-  return showModalBottomSheet<String>(
-    context: context,
-    backgroundColor: Theme.of(context).bottomSheetTheme.backgroundColor,
-    shape: Theme.of(context).bottomSheetTheme.shape,
-    builder: (_) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 8),
-          Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: Theme.of(context).dividerColor,
-              borderRadius: BorderRadius.circular(999),
+  Future<String?> _pickPlaylistId(BuildContext context) async {
+    final pls = widget.logic.playlists.where((p) => !p.isSpecial).toList();
+    return showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Theme.of(context).bottomSheetTheme.backgroundColor,
+      shape: Theme.of(context).bottomSheetTheme.shape,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Theme.of(context).dividerColor,
+                borderRadius: BorderRadius.circular(999),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          ListTile(
-            title: const Text('Lưu vào playlist nào?'),
-            subtitle: const Text('Huỷ = chỉ lưu vào thư viện'),
-            trailing: IconButton(
-              icon: const Icon(Icons.close_rounded),
-              onPressed: () => Navigator.pop(context),
+            const SizedBox(height: 10),
+            ListTile(
+              title: const Text('Lưu vào playlist nào?'),
+              subtitle: const Text('Huỷ = chỉ lưu vào thư viện'),
+              trailing: IconButton(
+                icon: const Icon(Icons.close_rounded),
+                onPressed: () => Navigator.pop(context),
+              ),
             ),
-          ),
-          ...pls.map((pl) => ListTile(
-                leading: const Icon(Icons.playlist_play_rounded),
-                title: Text(pl.name),
-                onTap: () => Navigator.pop(context, pl.id),
-              )),
-          const SizedBox(height: 12),
-        ],
+            ...pls.map((pl) => ListTile(
+                  leading: const Icon(Icons.playlist_play_rounded),
+                  title: Text(pl.name),
+                  onTap: () => Navigator.pop(context, pl.id),
+                )),
+            const SizedBox(height: 12),
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // ✅ THÊM
     widget.logic.addListener(_rebuild);
-    // Nhận file khi app đang chạy (share vào app)
-_shareSub = ReceiveSharingIntent.instance.getMediaStream().listen((files) async {
-  await _handleIncomingShared(files);
-  ReceiveSharingIntent.instance.reset();
 
-});
+    // Nhận file khi app đang chạy
+    _shareSub = ReceiveSharingIntent.instance.getMediaStream().listen((files) async {
+      await _handleIncomingShared(files);
+      ReceiveSharingIntent.instance.reset();
+    });
 
-// Nhận file khi app đang tắt, mở lên từ share
-ReceiveSharingIntent.instance.getInitialMedia().then((files) async {
-  if (_handledInitialShare) return;
-  _handledInitialShare = true;
-  await _handleIncomingShared(files);
-  ReceiveSharingIntent.instance.reset();
+    // Nhận file khi app đang tắt, mở lên từ share
+    ReceiveSharingIntent.instance.getInitialMedia().then((files) async {
+      if (_handledInitialShare) return;
+      _handledInitialShare = true;
+      await _handleIncomingShared(files);
+      ReceiveSharingIntent.instance.reset();
+    });
 
-});
-
+    // ✅ THÊM: scan SaveFlash khi app mở lần đầu
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final hasNew = await widget.saveFlashLogic.scan();
+      if (hasNew && mounted) {
+        await SaveFlashPopup.show(
+          context,
+          flashLogic: widget.saveFlashLogic,
+          appLogic: widget.logic,
+        );
+      }
+    });
   }
 
- @override
-void dispose() {
-  _shareSub?.cancel();
-  widget.logic.removeListener(_rebuild);
-  super.dispose();
-}
+  // ✅ THÊM: scan lại khi app resume từ background
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        final hasNew = await widget.saveFlashLogic.scan();
+        if (hasNew && mounted) {
+          await SaveFlashPopup.show(
+            context,
+            flashLogic: widget.saveFlashLogic,
+            appLogic: widget.logic,
+          );
+        }
+      });
+    }
+  }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this); // ✅ THÊM
+    _shareSub?.cancel();
+    widget.logic.removeListener(_rebuild);
+    super.dispose();
+  }
 
   void _rebuild() => setState(() {});
 
   ThemeData _buildTheme({required bool dark, required ThemeConfig cfg}) {
     final base = dark ? ThemeData.dark() : ThemeData.light();
 
-    // Fallbacks theo dark/light
     final fallback = ThemeConfig.defaults(darkDefault: dark);
 
-    Color c(String k, Color fb) => cfg.getColor(k, fb);
     Color cf(String k) => cfg.getColor(k, fallback.getColor(k, Colors.pink));
 
     final primary = cf('primary');
@@ -166,7 +192,6 @@ void dispose() {
 
     final textPrimary = cf('textPrimary');
     final textSecondary = cf('textSecondary');
-    final textTertiary = cf('textTertiary');
     final textOnPrimary = cf('textOnPrimary');
 
     final appBarBg = cf('appBarBg');
@@ -178,8 +203,6 @@ void dispose() {
 
     final buttonBg = cf('buttonBg');
     final buttonFg = cf('buttonFg');
-    final buttonTonalBg = cf('buttonTonalBg');
-    final buttonTonalFg = cf('buttonTonalFg');
 
     final inputFill = cf('inputFill');
     final inputBorder = cf('inputBorder');
@@ -199,7 +222,6 @@ void dispose() {
     final snackBg = cf('snackBg');
     final snackFg = cf('snackFg');
 
-    // Typography scaling (không đổi layout, chỉ scale font size token)
     final headerScale = (cfg.headerScale ?? 1.0).clamp(0.8, 1.6);
     final bodyScale = (cfg.bodyScale ?? 1.0).clamp(0.8, 1.6);
 
@@ -207,12 +229,9 @@ void dispose() {
       TextStyle? scale(TextStyle? s, double k) {
         if (s == null) return null;
         final fs = s.fontSize;
-        return s.copyWith(
-          fontSize: fs == null ? null : (fs * k),
-        );
+        return s.copyWith(fontSize: fs == null ? null : (fs * k));
       }
 
-      // Header = title/display, Body = body/label
       return t.copyWith(
         displayLarge: scale(t.displayLarge, headerScale),
         displayMedium: scale(t.displayMedium, headerScale),
@@ -238,26 +257,19 @@ void dispose() {
     );
 
     final textTheme = _scaleTextTheme(baseText).copyWith(
-      bodySmall:
-          _scaleTextTheme(baseText).bodySmall?.copyWith(color: textSecondary),
-      bodyMedium:
-          _scaleTextTheme(baseText).bodyMedium?.copyWith(color: textPrimary),
-      bodyLarge:
-          _scaleTextTheme(baseText).bodyLarge?.copyWith(color: textPrimary),
+      bodySmall: _scaleTextTheme(baseText).bodySmall?.copyWith(color: textSecondary),
+      bodyMedium: _scaleTextTheme(baseText).bodyMedium?.copyWith(color: textPrimary),
+      bodyLarge: _scaleTextTheme(baseText).bodyLarge?.copyWith(color: textPrimary),
     );
 
     return base.copyWith(
       useMaterial3: true,
-
       scaffoldBackgroundColor: background,
-
       colorScheme: base.colorScheme.copyWith(
         primary: primary,
         secondary: secondary,
         surface: surface,
       ),
-
-      // AppBar
       appBarTheme: AppBarTheme(
         backgroundColor: appBarBg,
         foregroundColor: appBarFg,
@@ -268,43 +280,27 @@ void dispose() {
           fontWeight: FontWeight.w700,
         ),
       ),
-
-      // Bottom nav
       bottomNavigationBarTheme: BottomNavigationBarThemeData(
         backgroundColor: bottomBg,
         selectedItemColor: bottomSelected,
         unselectedItemColor: bottomUnselected,
         type: BottomNavigationBarType.fixed,
       ),
-
-      // Cards
       cardTheme: CardThemeData(
         color: card,
         elevation: 0,
         shadowColor: shadow,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
-
-      // Divider
-      dividerTheme: DividerThemeData(
-        color: divider,
-        thickness: 1,
-        space: 1,
-      ),
-
-      // Icon
+      dividerTheme: DividerThemeData(color: divider, thickness: 1, space: 1),
       iconTheme: IconThemeData(color: iconPrimary),
       primaryIconTheme: IconThemeData(color: iconPrimary),
-
-      // Slider
       sliderTheme: base.sliderTheme.copyWith(
         activeTrackColor: sliderActive,
         thumbColor: sliderThumb,
         overlayColor: sliderOverlay,
         inactiveTrackColor: sliderInactive,
       ),
-
-      // Inputs (TextField, Search)
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: inputFill,
@@ -320,8 +316,6 @@ void dispose() {
           borderSide: BorderSide(color: primary, width: 1.2),
         ),
       ),
-
-      // Dialogs
       dialogTheme: DialogThemeData(
         backgroundColor: dialogBg,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
@@ -333,17 +327,12 @@ void dispose() {
           color: textSecondary,
         ),
       ),
-
-      // Sheets (chủ yếu set backgroundColor tại showModalBottomSheet)
-      // -> vẫn giữ token để app dùng
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: sheetBg,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
       ),
-
-      // Buttons
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           backgroundColor: buttonBg,
@@ -351,19 +340,13 @@ void dispose() {
         ),
       ),
       textButtonTheme: TextButtonThemeData(
-        style: TextButton.styleFrom(
-          foregroundColor: primary,
-        ),
+        style: TextButton.styleFrom(foregroundColor: primary),
       ),
-
-      // SnackBar
       snackBarTheme: SnackBarThemeData(
         backgroundColor: snackBg,
         contentTextStyle: TextStyle(color: snackFg),
         actionTextColor: primary,
       ),
-
-      // Text theme
       textTheme: textTheme.copyWith(
         titleLarge: textTheme.titleLarge?.copyWith(color: textPrimary),
         titleMedium: textTheme.titleMedium?.copyWith(color: textPrimary),
@@ -376,9 +359,6 @@ void dispose() {
   @override
   Widget build(BuildContext context) {
     final logic = widget.logic;
-
-    // ThemeConfig dùng chung, build 2 theme (light/dark) nhưng vẫn theo token của user.
-    // Nếu user đang dùng ThemeMode.dark => lấy defaults(dark) làm fallback.
     final cfg = logic.settings.themeConfig;
 
     return MaterialApp(
@@ -394,6 +374,10 @@ void dispose() {
     );
   }
 }
+
+// ================================================================
+// TẤT CẢ CODE PHÍA DƯỚI GIỮ NGUYÊN 100% - KHÔNG THAY ĐỔI GÌ
+// ================================================================
 
 class _Shell extends StatelessWidget {
   final AppLogic logic;
@@ -484,7 +468,6 @@ class _Shell extends StatelessWidget {
               onTap: () {
                 Navigator.pop(context);
                 WidgetsBinding.instance.addPostFrameCallback((_) async {
-                  // mở dialog progress
                   showDialog(
                     context: context,
                     barrierDismissible: false,
@@ -512,7 +495,7 @@ class _Shell extends StatelessWidget {
 
                   final err = await logic.importVideoToM4a();
 
-                  if (context.mounted) Navigator.pop(context); // đóng dialog
+                  if (context.mounted) Navigator.pop(context);
 
                   if (err != null && context.mounted) {
                     ScaffoldMessenger.of(context)
@@ -539,9 +522,6 @@ class _Shell extends StatelessWidget {
   }
 }
 
-/// ===============================
-/// HOME (library) - STICKY HEROCARD + SEARCH BAR
-/// ===============================
 class _HomePage extends StatefulWidget {
   final AppLogic logic;
   const _HomePage({required this.logic});
@@ -568,7 +548,6 @@ class _HomePageState extends State<_HomePage> {
 
     return CustomScrollView(
       slivers: [
-        // ✨ HEROCARD STICKY (PINNED)
         SliverPersistentHeader(
           pinned: true,
           delegate: _StickyHeroDelegate(
@@ -584,8 +563,6 @@ class _HomePageState extends State<_HomePage> {
             ),
           ),
         ),
-
-        // SEARCH BAR
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
@@ -612,8 +589,6 @@ class _HomePageState extends State<_HomePage> {
             ),
           ),
         ),
-
-        // HEADER
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
@@ -629,8 +604,6 @@ class _HomePageState extends State<_HomePage> {
             ),
           ),
         ),
-
-        // EMPTY STATES
         if (items.isEmpty)
           const SliverToBoxAdapter(
             child: Padding(
@@ -638,7 +611,6 @@ class _HomePageState extends State<_HomePage> {
               child: Text('Chưa có file. Bấm nút + để thêm mp3/m4a vào app.'),
             ),
           ),
-
         if (items.isNotEmpty && filteredItems.isEmpty)
           SliverToBoxAdapter(
             child: Padding(
@@ -655,8 +627,6 @@ class _HomePageState extends State<_HomePage> {
               ),
             ),
           ),
-
-        // TRACK LIST
         SliverPadding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
           sliver: SliverList(
@@ -695,7 +665,6 @@ class _HomePageState extends State<_HomePage> {
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          // ✨ VISUALIZER giống HeroCard khi đang phát
                           if (isCurrent)
                             Padding(
                               padding: const EdgeInsets.only(right: 4),
@@ -744,9 +713,6 @@ class _HomePageState extends State<_HomePage> {
   }
 }
 
-/// ===============================
-/// ✅ STICKY HEADER DELEGATE - ĐÃ FIX OVERFLOW
-/// ===============================
 class _StickyHeroDelegate extends SliverPersistentHeaderDelegate {
   final Widget child;
 
@@ -835,9 +801,6 @@ class _TrackMenu extends StatelessWidget {
   }
 }
 
-/// ===============================
-/// HERO CARD - ✅ FIX PADDING ĐỂ TRÁNH OVERFLOW
-/// ===============================
 class _HeroCard extends StatelessWidget {
   final AppLogic logic;
   const _HeroCard({required this.logic});
@@ -906,9 +869,6 @@ class _HeroCard extends StatelessWidget {
   }
 }
 
-/// ===============================
-/// ✨ AUDIO VISUALIZER - TO HƠN, CHỈ HIỆN KHI PHÁT NHẠC
-/// ===============================
 class _AudioVisualizer extends StatefulWidget {
   final bool isPlaying;
   final Color barColor;
@@ -1019,11 +979,8 @@ class _AudioVisualizerState extends State<_AudioVisualizer>
   }
 }
 
-/// ===============================
-/// ✨ NÚT TUA 5 GIÂY - REUSABLE WIDGET
-/// ===============================
 class _SeekStepButton extends StatelessWidget {
-  final int seconds; // -5 = lùi, +5 = tiến
+  final int seconds;
   final VoidCallback? onPressed;
 
   const _SeekStepButton({
@@ -1453,11 +1410,6 @@ class _FavoriteSegmentsSheet extends StatelessWidget {
   }
 }
 
-/// ===============================
-/// SETTINGS - THÊM "THEME A→Z" (đổi mọi token màu + font) + LOADING UI CHO BACKUP/RESTORE
-/// GIỮ NGUYÊN layout phần Setting hiện có (theme mode + title),
-/// chỉ THÊM 1 Card mới phía dưới.
-/// ===============================
 class _SettingsPage extends StatefulWidget {
   final AppLogic logic;
   const _SettingsPage({required this.logic});
@@ -1468,8 +1420,6 @@ class _SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<_SettingsPage> {
   late final TextEditingController _titleCtrl;
-
-  // NEW: font family + sliders
   late final TextEditingController _fontCtrl;
 
   @override
@@ -1497,8 +1447,6 @@ class _SettingsPageState extends State<_SettingsPage> {
       children: [
         Text('Setting', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 12),
-
-        // Theme mode card (giữ nguyên)
         Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -1536,10 +1484,7 @@ class _SettingsPageState extends State<_SettingsPage> {
             ),
           ),
         ),
-
         const SizedBox(height: 12),
-
-        // App title card (giữ nguyên)
         Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -1575,8 +1520,6 @@ class _SettingsPageState extends State<_SettingsPage> {
           ),
         ),
         const SizedBox(height: 12),
-
-        // ✅ BACKUP & RESTORE CARD WITH LOADING UI
         Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -1600,7 +1543,6 @@ class _SettingsPageState extends State<_SettingsPage> {
                   icon: const Icon(Icons.archive_rounded),
                   label: const Text('Xuất backup (.zip)'),
                   onPressed: () async {
-                    // Show loading dialog
                     showDialog(
                       context: context,
                       barrierDismissible: false,
@@ -1621,22 +1563,19 @@ class _SettingsPageState extends State<_SettingsPage> {
                     final path = await widget.logic.exportLibraryToZip();
 
                     if (!context.mounted) return;
-                    Navigator.pop(context); // Close loading dialog
+                    Navigator.pop(context);
 
                     if (path == null || path.startsWith('Đ')) {
-                      // Error
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(content: Text(path ?? 'Backup lỗi')),
                       );
                       return;
                     }
 
-                    // Success - show success message
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Backup xong')),
                     );
 
-                    // Open share sheet
                     await Share.shareXFiles(
                       [XFile(path)],
                       text: 'Backup thư viện nhạc',
@@ -1648,7 +1587,6 @@ class _SettingsPageState extends State<_SettingsPage> {
                   icon: const Icon(Icons.download_rounded),
                   label: const Text('Import backup'),
                   onPressed: () async {
-                    // Show loading dialog
                     showDialog(
                       context: context,
                       barrierDismissible: false,
@@ -1669,15 +1607,13 @@ class _SettingsPageState extends State<_SettingsPage> {
                     final err = await widget.logic.importLibraryFromZip();
 
                     if (!context.mounted) return;
-                    Navigator.pop(context); // Close loading dialog
+                    Navigator.pop(context);
 
                     if (err == null) {
-                      // Success
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('Restore xong')),
                       );
                     } else {
-                      // Error
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(content: Text(err)),
                       );
@@ -1688,10 +1624,7 @@ class _SettingsPageState extends State<_SettingsPage> {
             ),
           ),
         ),
-
         const SizedBox(height: 12),
-
-        // NEW: Theme A→Z card
         Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -1714,7 +1647,6 @@ class _SettingsPageState extends State<_SettingsPage> {
                             (logic.settings.themeMode == ThemeMode.dark) ||
                                 (logic.settings.themeMode == ThemeMode.system);
                         await logic.resetThemeToDefaults(darkDefault: useDark);
-                        // update local font controller
                         _fontCtrl.text =
                             logic.settings.themeConfig.fontFamily ?? '';
                         setState(() {});
@@ -1724,8 +1656,6 @@ class _SettingsPageState extends State<_SettingsPage> {
                   ],
                 ),
                 const SizedBox(height: 10),
-
-                // Font family input
                 Row(
                   children: [
                     const Icon(Icons.font_download_rounded, size: 18),
@@ -1752,10 +1682,7 @@ class _SettingsPageState extends State<_SettingsPage> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 12),
-
-                // Header scale
                 _scaleRow(
                   context,
                   icon: Icons.text_fields_rounded,
@@ -1767,8 +1694,6 @@ class _SettingsPageState extends State<_SettingsPage> {
                   },
                 ),
                 const SizedBox(height: 8),
-
-                // Body scale
                 _scaleRow(
                   context,
                   icon: Icons.subject_rounded,
@@ -1779,18 +1704,14 @@ class _SettingsPageState extends State<_SettingsPage> {
                     setState(() {});
                   },
                 ),
-
                 const SizedBox(height: 14),
                 Divider(color: Theme.of(context).dividerTheme.color),
-
                 const SizedBox(height: 10),
                 Text(
                   'Đổi màu từng phần tử (nhấn vào ô màu):',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 10),
-
-                // Grid color tokens
                 Wrap(
                   spacing: 10,
                   runSpacing: 10,
@@ -1853,7 +1774,6 @@ class _SettingsPageState extends State<_SettingsPage> {
   }
 
   Future<Color?> _pickColor(BuildContext context, Color initial) async {
-    // UI tối giản: RGB sliders + preview (không thêm package, giữ project gọn)
     double r = initial.red.toDouble();
     double g = initial.green.toDouble();
     double b = initial.blue.toDouble();
@@ -1953,7 +1873,6 @@ class _SettingsPageState extends State<_SettingsPage> {
   }
 }
 
-/// Token tile
 class _ColorToken extends StatelessWidget {
   final String label;
   final Color color;
@@ -2540,8 +2459,6 @@ class _FloatingHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // shadow color có token nhưng không ép vì UI này là "floating",
-    // vẫn lấy từ themeConfig đã map vào CardTheme.shadowColor.
     return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(18),
